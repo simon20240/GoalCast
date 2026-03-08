@@ -1,3 +1,10 @@
+import {
+  getCache, setCache, getCacheFallback,
+  isTodayDataCached, markDailyFetchComplete,
+  shouldRefreshLive, markLiveRefresh,
+  clearAllCache, CACHE_KEYS,
+} from './cacheService';
+
 const API_KEY = '4dacc53e6232827f801107853303d82a';
 const BASE_URL = 'https://v3.football.api-sports.io';
 
@@ -262,8 +269,16 @@ async function apiFetch(endpoint: string): Promise<any> {
 }
 
 // Fetch live matches across all priority leagues
+// Live matches refresh every 2 minutes (scores change), but use cache if recent
 export async function fetchLiveMatches(lang: 'ar' | 'en' = 'ar'): Promise<ProcessedMatch[]> {
   try {
+    // Check if we have a recent live cache (within 2 minutes)
+    const needsRefresh = await shouldRefreshLive(120000);
+    if (!needsRefresh) {
+      const cached = await getCache<ProcessedMatch[]>(CACHE_KEYS.LIVE_MATCHES);
+      if (cached) return cached;
+    }
+
     const data = await apiFetch('/fixtures?live=all');
     if (!data.response) return [];
 
@@ -272,26 +287,40 @@ export async function fetchLiveMatches(lang: 'ar' | 'en' = 'ar'): Promise<Proces
       .map((f: ApiFixture) => processFixture(f, lang));
 
     // Sort by priority (Arab-relevant leagues first)
-    return matches.sort((a, b) => {
+    const sorted = matches.sort((a, b) => {
       const aP = PRIORITY_LEAGUES.find(l => l.id === a.competitionId)?.priority ?? 99;
       const bP = PRIORITY_LEAGUES.find(l => l.id === b.competitionId)?.priority ?? 99;
       return aP - bP;
     });
+
+    // Cache live data + mark refresh time
+    await setCache(CACHE_KEYS.LIVE_MATCHES, sorted);
+    await markLiveRefresh();
+
+    return sorted;
   } catch (error) {
     console.error('Error fetching live matches:', error);
-    return [];
+    // Return cached data as fallback
+    const fallback = await getCacheFallback<ProcessedMatch[]>(CACHE_KEYS.LIVE_MATCHES);
+    return fallback || [];
   }
 }
 
-// Fetch today's fixtures
+// Fetch today's fixtures - cached daily, only one API call per day
 export async function fetchTodayFixtures(lang: 'ar' | 'en' = 'ar'): Promise<ProcessedMatch[]> {
   try {
+    // Check daily cache first
+    const cached = await getCache<ProcessedMatch[]>(CACHE_KEYS.TODAY_FIXTURES);
+    if (cached) return cached;
+
     const today = new Date().toISOString().split('T')[0];
+    const currentYear = new Date().getFullYear();
+    const season = new Date().getMonth() >= 6 ? currentYear : currentYear - 1;
     // Fetch from multiple priority leagues
     const topLeagueIds = PRIORITY_LEAGUES.slice(0, 12).map(l => l.id);
 
     const promises = topLeagueIds.map(lid =>
-      apiFetch(`/fixtures?league=${lid}&season=2024&date=${today}`).catch(() => ({ response: [] }))
+      apiFetch(`/fixtures?league=${lid}&season=${season}&date=${today}`).catch(() => ({ response: [] }))
     );
 
     const results = await Promise.all(promises);
@@ -305,7 +334,7 @@ export async function fetchTodayFixtures(lang: 'ar' | 'en' = 'ar'): Promise<Proc
     const matches = allFixtures.map(f => processFixture(f, lang));
 
     // Sort: live first, then by priority
-    return matches.sort((a, b) => {
+    const sorted = matches.sort((a, b) => {
       const statusOrder = { LIVE: 0, HT: 1, UPCOMING: 2, FT: 3 };
       const sA = statusOrder[a.status] ?? 4;
       const sB = statusOrder[b.status] ?? 4;
@@ -314,15 +343,24 @@ export async function fetchTodayFixtures(lang: 'ar' | 'en' = 'ar'): Promise<Proc
       const bP = PRIORITY_LEAGUES.find(l => l.id === b.competitionId)?.priority ?? 99;
       return aP - bP;
     });
+
+    // Cache for the rest of the day
+    await setCache(CACHE_KEYS.TODAY_FIXTURES, sorted);
+    return sorted;
   } catch (error) {
     console.error('Error fetching today fixtures:', error);
-    return [];
+    const fallback = await getCacheFallback<ProcessedMatch[]>(CACHE_KEYS.TODAY_FIXTURES);
+    return fallback || [];
   }
 }
 
-// Fetch upcoming fixtures for next days
+// Fetch upcoming fixtures for next days - cached daily
 export async function fetchUpcomingFixtures(lang: 'ar' | 'en' = 'ar'): Promise<ProcessedMatch[]> {
   try {
+    // Check daily cache first
+    const cached = await getCache<ProcessedMatch[]>(CACHE_KEYS.UPCOMING_FIXTURES);
+    if (cached) return cached;
+
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
     const tomorrowStr = tomorrow.toISOString().split('T')[0];
@@ -331,16 +369,19 @@ export async function fetchUpcomingFixtures(lang: 'ar' | 'en' = 'ar'): Promise<P
     dayAfter.setDate(dayAfter.getDate() + 2);
     const dayAfterStr = dayAfter.toISOString().split('T')[0];
 
+    const currentYear = new Date().getFullYear();
+    const season = new Date().getMonth() >= 6 ? currentYear : currentYear - 1;
+
     // Fetch from top leagues for next 2 days
     const topLeagueIds = PRIORITY_LEAGUES.slice(0, 8).map(l => l.id);
 
     const promises: Promise<any>[] = [];
     topLeagueIds.forEach(lid => {
       promises.push(
-        apiFetch(`/fixtures?league=${lid}&season=2024&date=${tomorrowStr}`).catch(() => ({ response: [] }))
+        apiFetch(`/fixtures?league=${lid}&season=${season}&date=${tomorrowStr}`).catch(() => ({ response: [] }))
       );
       promises.push(
-        apiFetch(`/fixtures?league=${lid}&season=2024&date=${dayAfterStr}`).catch(() => ({ response: [] }))
+        apiFetch(`/fixtures?league=${lid}&season=${season}&date=${dayAfterStr}`).catch(() => ({ response: [] }))
       );
     });
 
@@ -352,26 +393,38 @@ export async function fetchUpcomingFixtures(lang: 'ar' | 'en' = 'ar'): Promise<P
       }
     });
 
-    return allFixtures
+    const sorted = allFixtures
       .map(f => processFixture(f, lang))
       .sort((a, b) => a.timestamp - b.timestamp);
+
+    // Cache for the rest of the day
+    await setCache(CACHE_KEYS.UPCOMING_FIXTURES, sorted);
+    return sorted;
   } catch (error) {
     console.error('Error fetching upcoming fixtures:', error);
-    return [];
+    const fallback = await getCacheFallback<ProcessedMatch[]>(CACHE_KEYS.UPCOMING_FIXTURES);
+    return fallback || [];
   }
 }
 
-// Fetch finished matches from yesterday
+// Fetch finished matches from yesterday - cached daily
 export async function fetchFinishedMatches(lang: 'ar' | 'en' = 'ar'): Promise<ProcessedMatch[]> {
   try {
+    // Check daily cache first
+    const cached = await getCache<ProcessedMatch[]>(CACHE_KEYS.FINISHED_MATCHES);
+    if (cached) return cached;
+
     const yesterday = new Date();
     yesterday.setDate(yesterday.getDate() - 1);
     const yesterdayStr = yesterday.toISOString().split('T')[0];
 
+    const currentYear = new Date().getFullYear();
+    const season = new Date().getMonth() >= 6 ? currentYear : currentYear - 1;
+
     const topLeagueIds = PRIORITY_LEAGUES.slice(0, 8).map(l => l.id);
 
     const promises = topLeagueIds.map(lid =>
-      apiFetch(`/fixtures?league=${lid}&season=2024&date=${yesterdayStr}&status=FT-AET-PEN`).catch(() => ({ response: [] }))
+      apiFetch(`/fixtures?league=${lid}&season=${season}&date=${yesterdayStr}&status=FT-AET-PEN`).catch(() => ({ response: [] }))
     );
 
     const results = await Promise.all(promises);
@@ -382,16 +435,21 @@ export async function fetchFinishedMatches(lang: 'ar' | 'en' = 'ar'): Promise<Pr
       }
     });
 
-    return allFixtures
+    const sorted = allFixtures
       .map(f => processFixture(f, lang))
       .sort((a, b) => {
         const aP = PRIORITY_LEAGUES.find(l => l.id === a.competitionId)?.priority ?? 99;
         const bP = PRIORITY_LEAGUES.find(l => l.id === b.competitionId)?.priority ?? 99;
         return aP - bP;
       });
+
+    // Cache for the rest of the day
+    await setCache(CACHE_KEYS.FINISHED_MATCHES, sorted);
+    return sorted;
   } catch (error) {
     console.error('Error fetching finished matches:', error);
-    return [];
+    const fallback = await getCacheFallback<ProcessedMatch[]>(CACHE_KEYS.FINISHED_MATCHES);
+    return fallback || [];
   }
 }
 
@@ -436,6 +494,9 @@ export async function fetchStatistics(fixtureId: number): Promise<any> {
     return [];
   }
 }
+
+// Re-export cache utilities for use in AppContext
+export { isTodayDataCached, markDailyFetchComplete, clearAllCache } from './cacheService';
 
 export function formatViewers(count: number): string {
   if (count >= 1000000) return `${(count / 1000000).toFixed(1)}M`;

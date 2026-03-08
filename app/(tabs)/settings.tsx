@@ -1,5 +1,5 @@
-import React from 'react';
-import { View, Text, ScrollView, Pressable, StyleSheet, Platform } from 'react-native';
+import React, { useState } from 'react';
+import { View, Text, ScrollView, Pressable, StyleSheet, ActivityIndicator } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { theme } from '@/constants/theme';
@@ -10,7 +10,16 @@ import * as Haptics from 'expo-haptics';
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const { language, setLanguage, t, isRTL } = useLanguage();
-  const { notificationsEnabled, toggleNotifications } = useApp();
+  const { notificationsEnabled, toggleNotifications, isCached, forceRefreshData, isRefreshing } = useApp();
+  const [isForceRefreshing, setIsForceRefreshing] = useState(false);
+
+  const handleForceRefresh = async () => {
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    setIsForceRefreshing(true);
+    await forceRefreshData();
+    setIsForceRefreshing(false);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  };
 
   return (
     <View style={styles.container}>
@@ -49,6 +58,54 @@ export default function SettingsScreen() {
             </Pressable>
           </View>
 
+          {/* Cache / Data Status */}
+          <Text style={[styles.sectionLabel, isRTL && styles.textRight]}>{t('cacheStatus')}</Text>
+          
+          {/* Cache Status Banner */}
+          <View style={[styles.cacheBanner, isCached && styles.cacheBannerActive]}>
+            <View style={[styles.cacheIconWrap, isCached && styles.cacheIconActive]}>
+              <Ionicons 
+                name={isCached ? 'checkmark-circle' : 'cloud-download-outline'} 
+                size={22} 
+                color={isCached ? theme.primary : theme.textMuted} 
+              />
+            </View>
+            <View style={[styles.cacheInfo, isRTL && { alignItems: 'flex-end' }]}>
+              <Text style={[styles.cacheTitle, isRTL && styles.textRight, isCached && { color: theme.primary }]}>
+                {isCached ? t('dataCached') : t('dataNotCached')}
+              </Text>
+              <Text style={[styles.cacheSub, isRTL && styles.textRight]}>
+                {t('dailyCacheDesc')}
+              </Text>
+            </View>
+          </View>
+
+          {/* Force Refresh Button */}
+          <Pressable
+            onPress={handleForceRefresh}
+            disabled={isForceRefreshing}
+            style={({ pressed }) => [
+              styles.forceRefreshBtn,
+              pressed && { opacity: 0.8 },
+              isForceRefreshing && { opacity: 0.6 },
+            ]}
+          >
+            <View style={[styles.forceRefreshContent, isRTL && styles.rowReverse]}>
+              <View style={styles.refreshIconWrap}>
+                {isForceRefreshing ? (
+                  <ActivityIndicator size="small" color={theme.accent} />
+                ) : (
+                  <Ionicons name="refresh" size={20} color={theme.accent} />
+                )}
+              </View>
+              <View style={[styles.refreshInfo, isRTL && { alignItems: 'flex-end' }]}>
+                <Text style={[styles.refreshTitle, isRTL && styles.textRight]}>{t('forceRefresh')}</Text>
+                <Text style={[styles.refreshDesc, isRTL && styles.textRight]}>{t('forceRefreshDesc')}</Text>
+              </View>
+              <Ionicons name={isRTL ? 'chevron-back' : 'chevron-forward'} size={18} color={theme.textMuted} />
+            </View>
+          </Pressable>
+
           {/* Notifications */}
           <Text style={[styles.sectionLabel, isRTL && styles.textRight]}>{t('general')}</Text>
           <Pressable
@@ -77,6 +134,11 @@ export default function SettingsScreen() {
             <View style={[styles.aboutRow, isRTL && styles.rowReverse]}>
               <Text style={styles.aboutLabel}>{t('dataSource')}</Text>
               <Text style={styles.aboutValue}>{t('liveApi')}</Text>
+            </View>
+            <View style={styles.aboutDivider} />
+            <View style={[styles.aboutRow, isRTL && styles.rowReverse]}>
+              <Text style={styles.aboutLabel}>{t('dailyCache')}</Text>
+              <View style={[styles.cacheDot, isCached && styles.cacheDotActive]} />
             </View>
           </View>
         </ScrollView>
@@ -109,6 +171,47 @@ const styles = StyleSheet.create({
   langFlag: { fontSize: 24 },
   langText: { flex: 1, fontSize: 16, fontWeight: '600', color: theme.textSecondary },
   langTextActive: { color: theme.textPrimary },
+
+  // Cache Banner
+  cacheBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    backgroundColor: theme.surface, borderRadius: theme.radius.lg,
+    padding: 16, borderWidth: 1, borderColor: theme.border,
+    marginBottom: 10,
+  },
+  cacheBannerActive: {
+    borderColor: 'rgba(0,230,118,0.3)',
+    backgroundColor: 'rgba(0,230,118,0.05)',
+  },
+  cacheIconWrap: {
+    width: 40, height: 40, borderRadius: 20,
+    backgroundColor: 'rgba(123,138,165,0.1)',
+    justifyContent: 'center', alignItems: 'center',
+  },
+  cacheIconActive: { backgroundColor: 'rgba(0,230,118,0.15)' },
+  cacheInfo: { flex: 1 },
+  cacheTitle: { fontSize: 14, fontWeight: '600', color: theme.textPrimary },
+  cacheSub: { fontSize: 12, fontWeight: '400', color: theme.textMuted, marginTop: 3, lineHeight: 18 },
+
+  // Force Refresh
+  forceRefreshBtn: {
+    backgroundColor: theme.surface, borderRadius: theme.radius.lg,
+    padding: 16, borderWidth: 1, borderColor: theme.border,
+    marginBottom: 8,
+  },
+  forceRefreshContent: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+  },
+  refreshIconWrap: {
+    width: 40, height: 40, borderRadius: 20,
+    backgroundColor: 'rgba(255,109,0,0.1)',
+    justifyContent: 'center', alignItems: 'center',
+  },
+  refreshInfo: { flex: 1 },
+  refreshTitle: { fontSize: 14, fontWeight: '600', color: theme.accent },
+  refreshDesc: { fontSize: 12, fontWeight: '400', color: theme.textMuted, marginTop: 2 },
+
+  // Settings
   settingRow: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
     backgroundColor: theme.surface, borderRadius: theme.radius.lg,
@@ -144,4 +247,9 @@ const styles = StyleSheet.create({
   aboutDivider: { height: 1, backgroundColor: theme.border },
   aboutLabel: { fontSize: 14, fontWeight: '500', color: theme.textSecondary },
   aboutValue: { fontSize: 14, fontWeight: '600', color: theme.textPrimary },
+  cacheDot: {
+    width: 10, height: 10, borderRadius: 5,
+    backgroundColor: theme.textMuted,
+  },
+  cacheDotActive: { backgroundColor: theme.primary },
 });

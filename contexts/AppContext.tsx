@@ -6,6 +6,9 @@ import {
   fetchTodayFixtures,
   fetchUpcomingFixtures,
   fetchFinishedMatches,
+  isTodayDataCached,
+  markDailyFetchComplete,
+  clearAllCache,
 } from '@/services/footballApi';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useStreamBot, BotStatus } from '@/hooks/useStreamBot';
@@ -27,6 +30,8 @@ interface AppState {
   isRefreshing: boolean;
   error: string | null;
   refreshData: () => Promise<void>;
+  forceRefreshData: () => Promise<void>;
+  isCached: boolean;
   // Stream Bot
   getStreamsForMatch: (matchId: string) => StreamServer[];
   hasStreamsForMatch: (matchId: string) => boolean;
@@ -47,6 +52,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isCached, setIsCached] = useState(false);
 
   // Load favorites from storage
   useEffect(() => {
@@ -67,12 +73,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     AsyncStorage.setItem('notifications', JSON.stringify(notificationsEnabled));
   }, [notificationsEnabled]);
 
-  // Fetch data from API
+  // Fetch data from API - uses daily cache for fixtures
+  // Live matches still refresh every 2 min, but fixture lists are daily
   const loadData = useCallback(async (showLoading = true) => {
     if (showLoading) setIsLoading(true);
     setError(null);
 
     try {
+      // These functions internally check cache:
+      // - today/upcoming/finished: return cached data if already fetched today
+      // - live: return cached data if refreshed within 2 minutes
       const [live, today, upcoming, finished] = await Promise.all([
         fetchLiveMatches(language),
         fetchTodayFixtures(language),
@@ -85,7 +95,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // Merge today's non-live upcoming into upcoming
       const todayUpcoming = today.filter(m => m.status === 'UPCOMING');
       const allUpcoming = [...todayUpcoming, ...upcoming];
-      // Deduplicate by ID
       const uniqueUpcoming = allUpcoming.filter((m, i, arr) => arr.findIndex(x => x.id === m.id) === i);
       setUpcomingMatches(uniqueUpcoming);
 
@@ -94,6 +103,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const allFinished = [...todayFinished, ...finished];
       const uniqueFinished = allFinished.filter((m, i, arr) => arr.findIndex(x => x.id === m.id) === i);
       setFinishedMatches(uniqueFinished);
+
+      // Mark daily fetch complete
+      await markDailyFetchComplete();
+      const cachedStatus = await isTodayDataCached();
+      setIsCached(cachedStatus);
     } catch (err: any) {
       setError(err.message || 'Failed to load data');
     } finally {
@@ -121,8 +135,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => clearInterval(interval);
   }, [language]);
 
+  // Normal refresh - uses cache (won't re-fetch if cached today)
   const refreshData = useCallback(async () => {
     setIsRefreshing(true);
+    await loadData(false);
+  }, [loadData]);
+
+  // Force refresh - clears cache and fetches fresh data from API
+  const forceRefreshData = useCallback(async () => {
+    setIsRefreshing(true);
+    await clearAllCache();
+    setIsCached(false);
     await loadData(false);
   }, [loadData]);
 
@@ -163,6 +186,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         isRefreshing,
         error,
         refreshData,
+        forceRefreshData,
+        isCached,
         getStreamsForMatch,
         hasStreamsForMatch,
         botStatus,
