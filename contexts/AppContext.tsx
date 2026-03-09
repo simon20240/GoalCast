@@ -9,6 +9,7 @@ import {
   isTodayDataCached,
   markDailyFetchComplete,
   clearAllCache,
+  resetApiStatus,
 } from '@/services/footballApi';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useStreamBot, BotStatus } from '@/hooks/useStreamBot';
@@ -145,6 +146,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const forceRefreshData = useCallback(async () => {
     setIsRefreshing(true);
     await clearAllCache();
+    resetApiStatus();
     setIsCached(false);
     await loadData(false);
   }, [loadData]);
